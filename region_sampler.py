@@ -10,22 +10,25 @@ import z3
 from matplotlib import animation
 from matplotlib import pyplot as plt
 
+from functools import reduce
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-f', '--file', type=argparse.FileType('r', encoding='UTF-8'), 
-                        required=True)
+    parser.add_argument('-f', '--file', type=argparse.FileType('r', encoding='UTF-8'), required=True)
+    parser.add_argument('-s', '--splits', type=int)
     args = parser.parse_args()
 
     start_time = time.time()
+
+    splits = args.splits
 
     # Load smt2 file into z3
     s = z3.Optimize()
     s.from_string(args.file.read())
     print(s)
 
-    nx = 65
-    ny = 65
+    nx = 500
+    ny = 500
 
     # Build up vars used
     s_vars = set()
@@ -37,7 +40,8 @@ def main():
     s_vars = list(s_vars)
 
     # Check satisfiability
-    if s.check() != z3.sat:
+    ret = s.check()
+    if ret != z3.sat:
         print(ret)
         exit(-1)
 
@@ -46,8 +50,9 @@ def main():
     print()
 
     # Search for min/maxs of each variable
-    region = {}
-    search_region(s, s_vars, region)
+    region = search_region(s, s_vars)
+    region['hits'] = 0
+    region['total'] = 0
     print(region)
 
     # Convert z3 assertions into compiled python function
@@ -62,24 +67,27 @@ def main():
     # exit(0)
 
     # fig = plt.figure()
-    data = np.zeros((nx, ny))
+    # data = np.zeros((nx, ny))
     rands = 100000
     hits = 0
     start_time = time.time()
 
     # Split regions
     regions = []
-    print('--------------------------------------')
-    split_regions(s, s_vars, 0, region, regions)
-    print('--------------------------------------')
+    if splits > 0:
+        # print('--------------------------------------')
+        split_regions(s, s_vars, 0, region, regions)
+        # print('--------------------------------------')
 
-    # KEEP SPLITTING!?!?!
-    for _ in range(2):
-        new_regions = []
-        for r in regions:
-            split_regions(s, s_vars, 0, r, new_regions)
-        print('--------------------------------------')
-        regions = new_regions
+        # KEEP SPLITTING!?!?!
+        for _ in range(splits-1):
+            new_regions = []
+            for r in regions:
+                split_regions(s, s_vars, 0, r, new_regions)
+            # print('--------------------------------------')
+            regions = new_regions
+    else:
+        regions.append(region)
     
     # print('--------------------------------------')
     # # print(region)
@@ -89,12 +97,28 @@ def main():
     # NOTE The dictionary lookups here are very, very slow!
     # Cache regions into quick lookup table
     qregs = []
+    qregsizes = []
+    qregtotal = 0
     for r in regions:
         qregs.append([(r[s_var][0], r[s_var][1]) for s_var in s_vars])
+        size = reduce(lambda x, y: x*y, [(r[s_var][1] - r[s_var][0] + 1) for s_var in s_vars])
+        qregsizes.append(size)
+        qregtotal += size
     print(qregs)
+    print(qregsizes)
+    print(qregtotal)
     for i in range(rands):
 
-        reg_i = random.randrange(0, len(regions))
+        # reg_i = random.randrange(0, len(regions))
+        rand_size = random.randrange(0, qregtotal)
+        reg_i = 0
+        while True:
+            rand_size -= qregsizes[reg_i]
+            if rand_size > 0:
+                reg_i += 1
+            else:
+                break
+
         vals = []
         for r in qregs[reg_i]:
             if r[0] != r[1]:
@@ -109,69 +133,106 @@ def main():
         if loc['smt_expr'](*vals):
             hits += 1
             regions[reg_i]['hits'] += 1
-            data[vals[0]][vals[1]] += 1
+            # data[vals[0]][vals[1]] += 1
         regions[reg_i]['total'] += 1
 
     elapsed_time = time.time() - start_time
     rands_per_s = rands / elapsed_time
+    hits_per_s = hits / elapsed_time
     print(f'--- {rands} randomizations ---')
     print(f'--- {elapsed_time:.3f} seconds ---')
     print(f'--- {rands_per_s:.2f} rands per second ---')
     print(f'--- {hits} hits ---')
     print(f'--- {100*hits/rands:.2f}% hit rate ---')
-    print(regions)
+    print(f'--- {hits_per_s:.2f} hits per second ---')
+    print(f'{len(regions)=}')
 
-    plt.imshow(data, cmap='hot', interpolation='nearest')
-    plt.show()
+    # plt.imshow(data, cmap='hot', interpolation='nearest')
+    # plt.show()
 
     exit(0)
 
-def split_regions(s, s_vars, var_i, region, regions):
+def split_regions(s, s_vars, var_i, region, regions, verbose=False):
     # print(f'split_regions({s}, {var_i}, {s_vars})')
 
+    single_value = True
+    for s_var in s_vars:
+        if region[s_var][0] != region[s_var][1]:
+            single_value = False
+            break
+
+    if single_value:
+        regions.append(region)
+
     s_var = s_vars[var_i]
-    s.push()
-    s.add(s_var >= region[s_var][0])
-    s.add(s_var < (region[s_var][0] + region[s_var][1]) // 2)
 
-    if var_i+1 < len(s_vars):
-        split_regions(s, s_vars, var_i+1, region, regions)
-    else:
-        ret = s.check()
-        if ret != z3.sat:
-            print(f'Empty region')
-            # print(s)
+    if region[s_var][0] == region[s_var][1]:
+        s.push()
+        s.add(s_var == region[s_var][0])
+
+        if verbose: print(s_var, region[s_var], region[s_var][0], (region[s_var][0] + region[s_var][1]) // 2)
+        
+        if var_i+1 < len(s_vars):
+            split_regions(s, s_vars, var_i+1, region, regions)
         else:
-            new_region = {}
-            search_region(s, s_vars, new_region)
-            new_region['hits'] = 0
-            new_region['total'] = 0
-            print(new_region)
-            regions.append(new_region)
-    s.pop()
-
-
-    s.push()
-    s.add(s_var >= (region[s_var][0] + region[s_var][1]) // 2)
-    s.add(s_var <= region[s_var][1])
-
-    if var_i+1 < len(s_vars):
-        split_regions(s, s_vars, var_i+1, region, regions)
+            ret = s.check()
+            if ret != z3.sat:
+                if verbose: print(f'Empty region')
+                # print(s)
+            else:
+                new_region = search_region(s, s_vars)
+                new_region['hits'] = 0
+                new_region['total'] = 0
+                if verbose: print(new_region)
+                regions.append(new_region)
+        
+        s.pop()
     else:
-        ret = s.check()
-        if ret != z3.sat:
-            print(f'Empty region')
-            # print(s)
-        else:
-            new_region = {}
-            search_region(s, s_vars, new_region)
-            new_region['hits'] = 0
-            new_region['total'] = 0
-            print(new_region)
-            regions.append(new_region)
-    s.pop()
+        s.push()
+        s.add(s_var >= region[s_var][0])
+        s.add(s_var <= (region[s_var][0] + region[s_var][1]) // 2)
 
-def search_region(s, s_vars, region):
+        if verbose: print(s_var, region[s_var], region[s_var][0], (region[s_var][0] + region[s_var][1]) // 2)
+
+        if var_i+1 < len(s_vars):
+            split_regions(s, s_vars, var_i+1, region, regions)
+        else:
+            ret = s.check()
+            if ret != z3.sat:
+                if verbose: print(f'Empty region')
+                # print(s)
+            else:
+                new_region = search_region(s, s_vars)
+                new_region['hits'] = 0
+                new_region['total'] = 0
+                if verbose: print(new_region)
+                regions.append(new_region)
+        s.pop()
+
+
+        s.push()
+        s.add(s_var > (region[s_var][0] + region[s_var][1]) // 2)
+        s.add(s_var <= region[s_var][1])
+    
+        if verbose: print(s_var, region[s_var], (region[s_var][0] + region[s_var][1]) // 2, region[s_var][1])
+
+        if var_i+1 < len(s_vars):
+            split_regions(s, s_vars, var_i+1, region, regions)
+        else:
+            ret = s.check()
+            if ret != z3.sat:
+                if verbose: print(f'Empty region')
+                # print(s)
+            else:
+                new_region = search_region(s, s_vars)
+                new_region['hits'] = 0
+                new_region['total'] = 0
+                if verbose: print(new_region)
+                regions.append(new_region)
+        s.pop()
+
+def search_region(s, s_vars, verbose=False):
+    region = {}
     for s_var in s_vars:
         s.push()
         if type(s_var) is z3.z3.BoolRef:
@@ -220,27 +281,7 @@ def search_region(s, s_vars, region):
             region[s_var].append(m[s_var].as_long())
 
         s.pop()
-
-    # def init():
-    #     im.set_data(np.zeros((nx, ny)))
-    # 
-    # def animate(i):
-    #     s.push()
-    #     s.add(a == random.randrange(0,20))
-    #     s.add(b == random.randrange(0,20))
-    #     ret = s.check()
-    #     if ret == z3.sat:
-    #         m = s.model()
-    #         a_s = m[a].as_long()
-    #         b_s = m[b].as_long()
-    #         data[a_s][b_s] += 1
-    #     s.pop()
-    #     im.set_data(data)
-    #     return im
-    # 
-    # anim = animation.FuncAnimation(fig, animate, init_func=init, frames=nx * ny, interval=50)
-    # 
-    # plt.show()
+    return region
 
 
 # Evaluate assertion
