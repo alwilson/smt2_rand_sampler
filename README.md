@@ -16,6 +16,19 @@ Option to binary-search through regions, splitting them and eliminating them if 
 - Soft constraint support, need to be able to eliminate soft-constraints for the compiled python function
 
 ### Examples
+#### Help
+```bash
+$ ./region_sampler.py -h
+usage: region_sampler.py [-h] -f FILE [-s SPLITS] [-v]
+
+options:
+  -h, --help            show this help message and exit
+  -f FILE, --file FILE
+  -s SPLITS, --splits SPLITS
+  -v, --verbose
+```
+
+#### Quarter circle constraints example
 ```bash
 $ ./region_sampler.py -s 2 -f examples/circle.smt2
 ```
