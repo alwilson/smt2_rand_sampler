@@ -15,12 +15,15 @@ from functools import reduce
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-f', '--file', type=argparse.FileType('r', encoding='UTF-8'), required=True)
-    parser.add_argument('-s', '--splits', type=int)
+    parser.add_argument('-s', '--splits', type=int, default=1)
+    parser.add_argument('-v', '--verbose', action='store_true')
     args = parser.parse_args()
 
     start_time = time.time()
 
     splits = args.splits
+    verbose = args.verbose
+    print(f'{verbose=}')
 
     # Load smt2 file into z3
     s = z3.Optimize()
@@ -50,7 +53,7 @@ def main():
     print()
 
     # Search for min/maxs of each variable
-    region = search_region(s, s_vars)
+    region = search_region(s, s_vars, verbose)
     region['hits'] = 0
     region['total'] = 0
     print(region)
@@ -61,7 +64,7 @@ def main():
     glob, loc = string_to_function(s_vars, py_assertion_str)
     
     elapsed_time = time.time() - start_time
-    print(f'--- {elapsed_time:.3f} seconds ---\n')
+    print(f'--- initial setup: {elapsed_time:.3f} seconds ---\n')
 
     # print(loc['smt_expr'](0, 0))
     # exit(0)
@@ -76,19 +79,23 @@ def main():
     regions = []
     if splits > 0:
         # print('--------------------------------------')
-        split_regions(s, s_vars, 0, region, regions)
+        split_regions(s, s_vars, 0, region, regions, verbose)
         # print('--------------------------------------')
 
         # KEEP SPLITTING!?!?!
         for _ in range(splits-1):
             new_regions = []
             for r in regions:
-                split_regions(s, s_vars, 0, r, new_regions)
+                split_regions(s, s_vars, 0, r, new_regions, verbose)
             # print('--------------------------------------')
             regions = new_regions
     else:
         regions.append(region)
-    
+
+    elapsed_time = time.time() - start_time
+    print(f'--- regions split: {elapsed_time:.3f} seconds ---\n')
+    start_time = time.time()
+
     # print('--------------------------------------')
     # # print(region)
     # print(regions)
@@ -140,7 +147,7 @@ def main():
     rands_per_s = rands / elapsed_time
     hits_per_s = hits / elapsed_time
     print(f'--- {rands} randomizations ---')
-    print(f'--- {elapsed_time:.3f} seconds ---')
+    print(f'--- done randomizing: {elapsed_time:.3f} seconds ---')
     print(f'--- {rands_per_s:.2f} rands per second ---')
     print(f'--- {hits} hits ---')
     print(f'--- {100*hits/rands:.2f}% hit rate ---')
@@ -170,17 +177,17 @@ def split_regions(s, s_vars, var_i, region, regions, verbose=False):
         s.push()
         s.add(s_var == region[s_var][0])
 
-        if verbose: print(s_var, region[s_var], region[s_var][0], (region[s_var][0] + region[s_var][1]) // 2)
+        # if verbose: print(s_var, region[s_var], region[s_var][0], (region[s_var][0] + region[s_var][1]) // 2)
         
         if var_i+1 < len(s_vars):
-            split_regions(s, s_vars, var_i+1, region, regions)
+            split_regions(s, s_vars, var_i+1, region, regions, verbose)
         else:
             ret = s.check()
             if ret != z3.sat:
                 if verbose: print(f'Empty region')
                 # print(s)
             else:
-                new_region = search_region(s, s_vars)
+                new_region = search_region(s, s_vars, verbose)
                 new_region['hits'] = 0
                 new_region['total'] = 0
                 if verbose: print(new_region)
@@ -192,17 +199,17 @@ def split_regions(s, s_vars, var_i, region, regions, verbose=False):
         s.add(s_var >= region[s_var][0])
         s.add(s_var <= (region[s_var][0] + region[s_var][1]) // 2)
 
-        if verbose: print(s_var, region[s_var], region[s_var][0], (region[s_var][0] + region[s_var][1]) // 2)
+        # if verbose: print(s_var, region[s_var], region[s_var][0], (region[s_var][0] + region[s_var][1]) // 2)
 
         if var_i+1 < len(s_vars):
-            split_regions(s, s_vars, var_i+1, region, regions)
+            split_regions(s, s_vars, var_i+1, region, regions, verbose)
         else:
             ret = s.check()
             if ret != z3.sat:
                 if verbose: print(f'Empty region')
                 # print(s)
             else:
-                new_region = search_region(s, s_vars)
+                new_region = search_region(s, s_vars, verbose)
                 new_region['hits'] = 0
                 new_region['total'] = 0
                 if verbose: print(new_region)
@@ -217,14 +224,14 @@ def split_regions(s, s_vars, var_i, region, regions, verbose=False):
         if verbose: print(s_var, region[s_var], (region[s_var][0] + region[s_var][1]) // 2, region[s_var][1])
 
         if var_i+1 < len(s_vars):
-            split_regions(s, s_vars, var_i+1, region, regions)
+            split_regions(s, s_vars, var_i+1, region, regions, verbose)
         else:
             ret = s.check()
             if ret != z3.sat:
                 if verbose: print(f'Empty region')
                 # print(s)
             else:
-                new_region = search_region(s, s_vars)
+                new_region = search_region(s, s_vars, verbose)
                 new_region['hits'] = 0
                 new_region['total'] = 0
                 if verbose: print(new_region)
@@ -232,6 +239,8 @@ def split_regions(s, s_vars, var_i, region, regions, verbose=False):
         s.pop()
 
 def search_region(s, s_vars, verbose=False):
+    if verbose: print('search_region: ', s)
+
     region = {}
     for s_var in s_vars:
         s.push()
@@ -340,6 +349,9 @@ def eval_a(a : z3.ExprRef):
         a : z3.ArithRef
         if a.num_args() == 0:
             return str(a)
+
+    if type(a) == z3.BitVecRef:
+        return str(a)
 
     print(f'Unknown type: {type(a)}')
     exit(-1)
