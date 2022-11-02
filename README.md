@@ -9,7 +9,7 @@ Starting with this initial bounding region it can make random samples in that re
 To do this it compiles the constraints and variables into a python function.
 Option to binary-search through regions, splitting them and eliminating them if z3 can't satisfy them.
 
-### TOOD
+### TODO
 
 - Split variables and constraints into separate groups if unrelated to each other
 - Split regions based on hit rate and variables
